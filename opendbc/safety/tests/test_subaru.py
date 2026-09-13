@@ -350,8 +350,50 @@ class TestSubaruGen1TorqueStockLongitudinalSngSafety(TestSubaruGen1TorqueStockLo
 
 
 class TestSubaruGen1ImprezaTorqueSngSafety(TestSubaruGen1TorqueStockLongitudinalSngSafety):
+  # the only config matching the device with all three features on; no single feature's plan covers it
   FLAGS = SubaruSafetyFlags.IMPREZA_TORQUE | SubaruSafetyFlags.SNG
   MAX_TORQUE_LOOKUP = [0], [3071]
+
+  def test_aol_keeps_impreza_cap_boundary(self):
+    # deltas from _set_prev_torque are 0 or 1, so rate and RT-delta limits never fire here
+    self._prepare_aol_lateral()
+    self._reset_torque_driver_measurement(0)
+    self._set_prev_torque(2047)
+    self.assertTrue(self._tx(self._torque_cmd_msg(2048)))
+    self._set_prev_torque(3071)
+    self.assertTrue(self._tx(self._torque_cmd_msg(3071)))
+    self._set_prev_torque(3071)
+    self.assertFalse(self._tx(self._torque_cmd_msg(3072)))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_aol_requires_sng_brake_pedal_rx(self):
+    # the one coupling the three features create: SNG adds 0x139 to the rx checks, and aol_allowed
+    # keys off safety_rx_checks_invalid, so a missing or off-rate Brake_Pedal now disables always-on
+    # lateral as well as stop-and-go
+    other_checked_msgs = (("Throttle", {"Throttle_Pedal": 0}),
+                          ("Steering_Torque", {"Steer_Torque_Sensor": 0}),
+                          ("Wheel_Speeds", {s: 0 for s in ("FR", "FL", "RR", "RL")}),
+                          ("Brake_Status", {"Brake": 0}),
+                          ("CruiseControl", {"Cruise_On": 1}))
+
+    for brake_pedal_seen in (False, True):
+      with self.subTest(brake_pedal_seen=brake_pedal_seen):
+        self._reset_safety_hooks()
+        self._rx_counters.clear()
+        self._set_aol_experience(True)
+
+        for name, values in other_checked_msgs:
+          self._rx_sample_window(name, values)
+        if brake_pedal_seen:
+          self._rx_sample_window("Brake_Pedal", {"Brake_Pedal": 0})
+
+        self.safety.safety_tick_current_safety_config()
+        self.assertEqual(brake_pedal_seen, self.safety.safety_config_valid())
+
+        # aol_allowed is only recomputed in the rx hook
+        self._set_aol_acc_main(True)
+        self.assertEqual(brake_pedal_seen, self.safety.get_aol_allowed())
+        self._assert_aol_lateral(brake_pedal_seen)
 
 
 class TestSubaruGen2TorqueStockLongitudinalSngIgnoredSafety(TestSubaruGen2TorqueStockLongitudinalSafety):
