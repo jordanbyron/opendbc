@@ -345,6 +345,10 @@ void safety_tick(const safety_config *cfg) {
 
   safety_rx_checks_invalid = rx_checks_invalid;
   aol_rx_invalid = rx_checks_invalid;
+  // aol_allowed is otherwise only recomputed on RX, so total CAN loss would leave it stale
+  if (rx_checks_invalid) {
+    aol_allowed = false;
+  }
 }
 
 static void relay_malfunction_set(void) {

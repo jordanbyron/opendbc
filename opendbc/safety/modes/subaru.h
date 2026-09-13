@@ -82,7 +82,8 @@
   {.msg = {{MSG_SUBARU_Brake_Status,    alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_CruiseControl,   alt_bus,         8, 20U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
-// Brake_Pedal's 50U is inferred from Brake_Status, never measured on a car: no Subaru DBC carries cycle times.
+// Brake_Pedal's 50U: no Subaru DBC carries cycle times, but openpilot's CAN parser enforced
+// ("Brake_Pedal", 50) and ("Throttle", 100) on every global Subaru through 0.9.7.
 // If the real rate is lower the car simply never engages; drop this check and the tx_hook brake_pedal bound together.
 #define SUBARU_SNG_RX_CHECKS(alt_bus) \
   SUBARU_COMMON_RX_CHECKS(alt_bus) \

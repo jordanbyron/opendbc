@@ -1241,6 +1241,18 @@ class AlwaysOnLateralSafetyTestBase(SafetyTestBase, abc.ABC):
     self.assertFalse(self.safety.get_aol_allowed())
     self._assert_aol_lateral(False)
 
+  def test_always_on_lateral_blocks_on_rx_loss_without_any_rx(self):
+    # total CAN loss: only the 1 Hz tick runs, no RX ever recomputes the gate
+    self._prepare_aol_lateral()
+    self._assert_aol_lateral(True)
+
+    for _ in range(5):
+      self.safety.set_timer(int(5e6))
+      self.safety.safety_tick_current_safety_config()
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
   def test_always_on_lateral_blocks_on_invalid_rx_msg(self):
     self._prepare_aol_lateral()
     self._assert_aol_lateral(True)
