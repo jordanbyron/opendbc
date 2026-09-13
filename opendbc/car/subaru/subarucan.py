@@ -3,6 +3,12 @@ from opendbc.car.subaru.values import CanBus
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 
+# stop-and-go spoof floors, in raw DBC counts. Kept tiny: panda independently rejects anything
+# above what the engine/brake ECUs themselves reported, and these are the floor under that bound.
+SNG_THROTTLE_SPOOF = 5   # Throttle_Pedal, 5/255
+SNG_BRAKE_SPOOF = 5      # Brake_Pedal, 5/4095
+SNG_SPEED_SPOOF = 3      # Brake_Pedal->Speed, 3 counts of 0.05625 kph
+
 
 def create_steering_control(packer, apply_torque, steer_req):
   values = {
@@ -279,6 +285,28 @@ def create_es_static_2(packer):
   }
 
   return packer.make_can_msg("ES_STATIC_2", CanBus.main, values)
+
+
+def create_throttle(packer, counter, throttle_msg, throttle_cmd):
+  values = {s: throttle_msg[s] for s in ["CHECKSUM", "Signal1", "Engine_RPM", "Neutral", "Throttle_Pedal",
+                                         "Throttle_Cruise", "Throttle_Combo", "Signal3", "Off_Accel"]}
+  values["COUNTER"] = counter % 0x10
+  if throttle_cmd:
+    # never report *less* pedal than the driver is actually applying
+    values["Throttle_Pedal"] = max(int(throttle_msg["Throttle_Pedal"]), SNG_THROTTLE_SPOOF)
+  return packer.make_can_msg("Throttle", CanBus.camera, values)
+
+
+def create_brake_pedal(packer, counter, brake_pedal_msg, speed_cmd, brake_cmd):
+  values = {s: brake_pedal_msg[s] for s in ["CHECKSUM", "Signal1", "Speed", "Signal2", "Brake_Lights",
+                                            "Signal3", "Brake_Pedal", "Signal4"]}
+  values["COUNTER"] = counter % 0x10
+  if speed_cmd:
+    values["Speed"] = SNG_SPEED_SPOOF * 0.05625
+  if brake_cmd:
+    values["Brake_Pedal"] = max(int(brake_pedal_msg["Brake_Pedal"]), SNG_BRAKE_SPOOF)
+    values["Brake_Lights"] = 1
+  return packer.make_can_msg("Brake_Pedal", CanBus.camera, values)
 
 
 # *** Subaru Pre-global ***

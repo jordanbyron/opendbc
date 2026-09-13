@@ -117,3 +117,14 @@ class CarInterface(CarInterfaceBase):
   def deinit(CP, can_recv, can_send):
     communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
     CarInterface.init(CP, can_recv, can_send, communication_control)
+
+  @staticmethod
+  def enable_stop_and_go(CP) -> bool:
+    # mirroring Throttle/Brake_Pedal to EyeSight is only validated on gen1 global cars running stock cruise;
+    # CP is shared with CI.CS and CI.CC, so mutating it here reaches the controller and state for this boot
+    eligible = not (CP.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID | SubaruFlags.PREGLOBAL | SubaruFlags.LKAS_ANGLE)) \
+               and not CP.openpilotLongitudinalControl
+    if eligible:
+      CP.flags |= SubaruFlags.SNG.value
+      CP.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.SNG.value
+    return eligible

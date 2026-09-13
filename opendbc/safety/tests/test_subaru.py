@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import enum
 import unittest
+from collections import defaultdict
 
 from opendbc.car.subaru.values import SubaruSafetyFlags
 from opendbc.car.structs import CarParams
@@ -11,6 +12,7 @@ from functools import partial
 
 
 class SubaruMsg(enum.IntEnum):
+  Brake_Pedal       = 0x139
   Brake_Status      = 0x13c
   CruiseControl     = 0x240
   Throttle          = 0x40
@@ -34,6 +36,13 @@ SUBARU_MAIN_BUS = 0
 SUBARU_ALT_BUS  = 1
 SUBARU_CAM_BUS  = 2
 
+SAMPLE_VALS = 6            # MAX_SAMPLE_VALS in declarations.h
+SPEED_TO_KPH = 0.05625     # Brake_Pedal->Speed, kph per count
+SPEED_COUNTS_PER_MS = 64
+SNG_THROTTLE_SPOOF = 5
+SNG_BRAKE_SPOOF = 5
+SNG_SPEED_SLACK = 64
+
 
 def lkas_tx_msgs(alt_bus, lkas_msg=SubaruMsg.ES_LKAS):
   return [[lkas_msg,                    SUBARU_MAIN_BUS],
@@ -53,6 +62,11 @@ def gen2_long_additional_tx_msgs():
           [SubaruMsg.ES_HighBeamAssist, SUBARU_MAIN_BUS],
           [SubaruMsg.ES_STATIC_1,       SUBARU_MAIN_BUS],
           [SubaruMsg.ES_STATIC_2,       SUBARU_MAIN_BUS]]
+
+
+def sng_tx_msgs():
+  return [[SubaruMsg.Throttle,    SUBARU_CAM_BUS],
+          [SubaruMsg.Brake_Pedal, SUBARU_CAM_BUS]]
 
 
 def fwd_blacklisted_addr(lkas_msg=SubaruMsg.ES_LKAS):
@@ -256,6 +270,85 @@ class TestSubaruGen1ImprezaTorqueLongitudinalSafety(TestSubaruGen1LongitudinalSa
 class TestSubaruGen2ImprezaTorqueIgnoredSafety(TestSubaruGen2TorqueStockLongitudinalSafety):
   # the flag is gen1-only; gen2 keeps its 1000 cap
   FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.IMPREZA_TORQUE
+
+
+class TestSubaruGen1TorqueStockLongitudinalSngSafety(TestSubaruGen1TorqueStockLongitudinalSafety):
+  FLAGS = SubaruSafetyFlags.SNG
+  TX_MSGS = lkas_tx_msgs(SUBARU_MAIN_BUS) + sng_tx_msgs()
+  FWD_BLACKLISTED_ADDRS = {**fwd_blacklisted_addr(), SUBARU_MAIN_BUS: [SubaruMsg.Throttle, SubaruMsg.Brake_Pedal]}
+  RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
+                                               SubaruMsg.ES_Infotainment),
+                             SUBARU_CAM_BUS: (SubaruMsg.Throttle, SubaruMsg.Brake_Pedal)}
+
+  def setUp(self):
+    super().setUp()
+    self._rx_counters: dict[str, int] = defaultdict(int)
+
+  def _rx_sample_window(self, name, values, bus=SUBARU_MAIN_BUS):
+    # MAX_SAMPLE_VALS worth of frames, so the rolling max holds nothing but this value.
+    # counters have to advance or the rx check invalidates the message part way through
+    for _ in range(SAMPLE_VALS):
+      self._rx_counters[name] = (self._rx_counters[name] + 1) % 16
+      msg = self.packer.make_can_msg_safety(name, bus, {**values, "COUNTER": self._rx_counters[name]})
+      self.assertTrue(self._rx(msg))
+
+  def _cam_throttle_msg(self, pedal):
+    return self.packer.make_can_msg_safety("Throttle", SUBARU_CAM_BUS, {"Throttle_Pedal": pedal, "COUNTER": 0})
+
+  def _cam_brake_pedal_msg(self, brake=0, speed=0, lights=0):
+    values = {"Brake_Pedal": brake, "Speed": speed * SPEED_TO_KPH, "Brake_Lights": lights, "COUNTER": 0}
+    return self.packer.make_can_msg_safety("Brake_Pedal", SUBARU_CAM_BUS, values)
+
+  def test_sng_throttle_limits(self):
+    # the mirror is deliberately engagement-independent, so both states must behave identically
+    for controls_allowed in (False, True):
+      for reported, limit in ((0, SNG_THROTTLE_SPOOF), (200, 200)):
+        with self.subTest(controls_allowed=controls_allowed, reported=reported):
+          self._rx_sample_window("Throttle", {"Throttle_Pedal": reported})
+          self.safety.set_controls_allowed(controls_allowed)
+          self.assertTrue(self._tx(self._cam_throttle_msg(0)))
+          self.assertTrue(self._tx(self._cam_throttle_msg(limit)))
+          self.assertFalse(self._tx(self._cam_throttle_msg(limit + 1)))
+
+  def test_sng_brake_pedal_limits(self):
+    for controls_allowed in (False, True):
+      for reported, limit in ((0, SNG_BRAKE_SPOOF), (400, 400)):
+        with self.subTest(controls_allowed=controls_allowed, reported=reported):
+          self._rx_sample_window("Brake_Pedal", {"Brake_Pedal": reported})
+          self.safety.set_controls_allowed(controls_allowed)
+          self.assertTrue(self._tx(self._cam_brake_pedal_msg(brake=0)))
+          self.assertTrue(self._tx(self._cam_brake_pedal_msg(brake=limit)))
+          self.assertFalse(self._tx(self._cam_brake_pedal_msg(brake=limit + 1)))
+
+  def test_sng_speed_limits(self):
+    for speed_kph in (0, 20, 80):
+      with self.subTest(speed_kph=speed_kph):
+        self._rx_sample_window("Wheel_Speeds", {s: speed_kph for s in ("FR", "FL", "RR", "RL")})
+        speed_ms = round(self.safety.get_vehicle_speed_max() * 1000)
+        limit = ((speed_ms * SPEED_COUNTS_PER_MS) // 1000) + SNG_SPEED_SLACK
+        self.assertTrue(self._tx(self._cam_brake_pedal_msg(speed=limit)))
+        self.assertFalse(self._tx(self._cam_brake_pedal_msg(speed=limit + 1)))
+
+  def test_sng_throttle_rx_not_user_gas(self):
+    # our own copy on the camera bus must never read back as a driver gas press
+    self.assertFalse(self.safety.get_gas_pressed_prev())
+    self._rx(self._cam_throttle_msg(SNG_THROTTLE_SPOOF))
+    self.assertFalse(self.safety.get_gas_pressed_prev())
+
+
+class TestSubaruGen1ImprezaTorqueSngSafety(TestSubaruGen1TorqueStockLongitudinalSngSafety):
+  FLAGS = SubaruSafetyFlags.IMPREZA_TORQUE | SubaruSafetyFlags.SNG
+  MAX_TORQUE_LOOKUP = [0], [3071]
+
+
+class TestSubaruGen2TorqueStockLongitudinalSngIgnoredSafety(TestSubaruGen2TorqueStockLongitudinalSafety):
+  # SNG is gen1-only; the flag must not change the TX list or the forwarding
+  FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.SNG
+
+
+class TestSubaruGen1LongitudinalSngIgnoredSafety(TestSubaruGen1LongitudinalSafety):
+  # SNG is stock-longitudinal only
+  FLAGS = SubaruSafetyFlags.LONG | SubaruSafetyFlags.SNG
 
 
 if __name__ == "__main__":

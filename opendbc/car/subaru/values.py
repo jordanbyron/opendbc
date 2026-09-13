@@ -61,6 +61,7 @@ class SubaruSafetyFlags(IntFlag):
   LONG = 2
   PREGLOBAL_REVERSED_DRIVER_TORQUE = 4
   IMPREZA_TORQUE = 8
+  SNG = 16
 
 
 class SubaruFlags(IntFlag):
@@ -78,8 +79,9 @@ class SubaruFlags(IntFlag):
   HYBRID = 32
   LKAS_ANGLE = 64
 
-  # User-enabled flag, set from a Param in interface.py — never from platform config
+  # User-enabled flags, set from a Param in interface.py — never from platform config
   IMPREZA_TORQUE = 128
+  SNG = 256
 
 
 GLOBAL_ES_ADDR = 0x787
