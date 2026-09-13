@@ -57,6 +57,8 @@ bool vehicle_moving = false;
 bool acc_main_on = false;  // referred to as "ACC off" in ISO 15622:2018
 int cruise_button_prev = 0;
 bool safety_rx_checks_invalid = false;
+bool aol_allowed = false;
+bool aol_rx_invalid = false;
 
 // for safety modes with torque steering control
 int desired_torque_last = 0;       // last desired steer torque
@@ -191,6 +193,10 @@ bool safety_rx_hook(const CANPacket_t *msg) {
   bool whitelisted = get_addr_check_index(msg, current_safety_config.rx_checks, current_safety_config.rx_checks_len) != -1;
   if (valid && whitelisted) {
     current_hooks->rx(msg);
+  }
+
+  if (whitelisted && !valid) {
+    aol_rx_invalid = true;
   }
 
   // Handles gas, brake, and regen paddle
@@ -337,6 +343,7 @@ void safety_tick(const safety_config *cfg) {
   }
 
   safety_rx_checks_invalid = rx_checks_invalid;
+  aol_rx_invalid = rx_checks_invalid;
 }
 
 static void relay_malfunction_set(void) {
@@ -363,6 +370,10 @@ static void generic_rx_checks(void) {
     controls_allowed = false;
   }
   steering_disengage_prev = steering_disengage;
+
+  // never sets controls_allowed; it only widens the steering gate in lateral.h
+  aol_allowed = !safety_rx_checks_invalid && !aol_rx_invalid && !steering_disengage && acc_main_on &&
+                ((alternative_experience & ALT_EXP_ALWAYS_ON_LATERAL) != 0);
 }
 
 static void stock_ecu_check(bool stock_ecu_detected) {
@@ -452,6 +463,8 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   controls_allowed = false;
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
+  aol_allowed = false;
+  aol_rx_invalid = false;
 
   current_safety_config.rx_checks = NULL;
   current_safety_config.rx_checks_len = 0;

@@ -121,6 +121,18 @@ class TestSubaruSafetyBase(common.CarSafetyTest):
     values = {"Cruise_Activated": enable}
     return self.packer.make_can_msg_safety("CruiseControl", self.ALT_MAIN_BUS, values)
 
+  def _set_aol_acc_main(self, main_on: bool):
+    values = {"Cruise_On": main_on}
+    self._rx(self.packer.make_can_msg_safety("CruiseControl", self.ALT_MAIN_BUS, values))
+
+  def _aol_invalid_rx_msg(self):
+    def corrupt_checksum(msg):
+      addr, dat, bus = msg
+      return addr, bytes([dat[0] ^ 0xFF]) + dat[1:], bus
+
+    return self.packer.make_can_msg_safety("CruiseControl", self.ALT_MAIN_BUS, {"Cruise_On": True},
+                                           fix_checksum=corrupt_checksum)
+
 
 class TestSubaruStockLongitudinalSafetyBase(TestSubaruSafetyBase):
   def _cancel_msg(self, cancel, cruise_throttle=0):
@@ -167,7 +179,8 @@ class TestSubaruLongitudinalSafetyBase(TestSubaruSafetyBase, common.Longitudinal
     return self.packer.make_can_msg_safety("ES_Status", self.ALT_MAIN_BUS, values)
 
 
-class TestSubaruTorqueSafetyBase(TestSubaruSafetyBase, common.DriverTorqueSteeringSafetyTest, common.SteerRequestCutSafetyTest):
+class TestSubaruTorqueSafetyBase(TestSubaruSafetyBase, common.AlwaysOnLateralTorqueSteeringSafetyTest,
+                                 common.DriverTorqueSteeringSafetyTest, common.SteerRequestCutSafetyTest):
   MAX_RATE_UP = 50
   MAX_RATE_DOWN = 70
   MAX_TORQUE_LOOKUP = [0], [2047]

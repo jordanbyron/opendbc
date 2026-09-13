@@ -264,6 +264,9 @@ extern bool acc_main_on; // referred to as "ACC off" in ISO 15622:2018
 extern int cruise_button_prev;
 extern bool safety_rx_checks_invalid;
 
+extern bool aol_allowed;
+extern bool aol_rx_invalid;  // latched in the rx hook, cleared only by safety_tick
+
 // for safety modes with torque steering control
 extern int desired_torque_last;       // last desired steer torque
 extern int rt_torque_last;            // last desired torque for real time check
@@ -301,6 +304,9 @@ extern struct sample_t angle_meas;         // last 6 steer angles/curvatures
 
 // This flag allows AEB to be commanded from openpilot.
 #define ALT_EXP_ALLOW_AEB 16
+
+// This flag allows steering while ACC main is on but openpilot is not engaged.
+#define ALT_EXP_ALWAYS_ON_LATERAL 32
 
 extern int alternative_experience;
 
