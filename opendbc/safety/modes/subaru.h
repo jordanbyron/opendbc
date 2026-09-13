@@ -72,6 +72,7 @@
 
 static bool subaru_gen2 = false;
 static bool subaru_longitudinal = false;
+static bool subaru_impreza_torque = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -130,6 +131,8 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
 static bool subaru_tx_hook(const CANPacket_t *msg) {
   const TorqueSteeringLimits SUBARU_STEERING_LIMITS      = SUBARU_STEERING_LIMITS_GENERATOR(2047, 50, 70);
   const TorqueSteeringLimits SUBARU_GEN2_STEERING_LIMITS = SUBARU_STEERING_LIMITS_GENERATOR(1000, 40, 40);
+  // SUBARU_IMPREZA only, enabled by param; only max_torque differs from SUBARU_STEERING_LIMITS
+  const TorqueSteeringLimits SUBARU_IMPREZA_STEERING_LIMITS = SUBARU_STEERING_LIMITS_GENERATOR(3071, 50, 70);
 
   const LongitudinalLimits SUBARU_LONG_LIMITS = {
     .min_gas = 808,       // appears to be engine braking
@@ -151,7 +154,8 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
 
     bool steer_req = (msg->data[3] >> 5) & 1U;
 
-    const TorqueSteeringLimits limits = subaru_gen2 ? SUBARU_GEN2_STEERING_LIMITS : SUBARU_STEERING_LIMITS;
+    const TorqueSteeringLimits limits = subaru_gen2 ? SUBARU_GEN2_STEERING_LIMITS :
+                                        subaru_impreza_torque ? SUBARU_IMPREZA_STEERING_LIMITS : SUBARU_STEERING_LIMITS;
     violation |= steer_torque_cmd_checks(desired_torque, steer_req, limits);
   }
 
@@ -231,6 +235,13 @@ static safety_config subaru_init(uint16_t param) {
   const uint16_t SUBARU_PARAM_GEN2 = 1;
 
   subaru_gen2 = GET_FLAG(param, SUBARU_PARAM_GEN2);
+
+  // Deliberately not inside #ifdef ALLOW_DEBUG: this fork never builds with RELEASE set
+  // (panda/SConscript defines ALLOW_DEBUG unless RELEASE is in the env). If a RELEASE build
+  // path is ever added, this read must stay unconditional or gate the Python side to match,
+  // otherwise firmware silently caps at 2047 while openpilot commands up to 3071.
+  const uint16_t SUBARU_PARAM_IMPREZA_TORQUE = 8;
+  subaru_impreza_torque = GET_FLAG(param, SUBARU_PARAM_IMPREZA_TORQUE);
 
 #ifdef ALLOW_DEBUG
   const uint16_t SUBARU_PARAM_LONGITUDINAL = 2;

@@ -167,6 +167,16 @@ class TestSubaruTorqueSafetyBase(TestSubaruSafetyBase, common.DriverTorqueSteeri
     values = {"LKAS_Output": torque, "LKAS_Request": steer_req}
     return self.packer.make_can_msg_safety("ES_LKAS", SUBARU_MAIN_BUS, values)
 
+  def test_stock_gen1_cap_boundary(self):
+    # deltas from _set_prev_torque are 0 or 1, so rate and RT-delta limits never fire here
+    self.safety.set_controls_allowed(True)
+    self._reset_torque_driver_measurement(0)
+    self._set_prev_torque(2047)
+    self.assertEqual(self._tx(self._torque_cmd_msg(2048)), self.MAX_TORQUE >= 2048)
+    self._set_prev_torque(3071)
+    self.assertEqual(self._tx(self._torque_cmd_msg(3071)), self.MAX_TORQUE >= 3071)
+    self.assertFalse(self._tx(self._torque_cmd_msg(3072)))
+
 
 class TestSubaruGen1TorqueStockLongitudinalSafety(TestSubaruStockLongitudinalSafetyBase, TestSubaruTorqueSafetyBase):
   FLAGS = 0
@@ -231,6 +241,21 @@ class TestSubaruGen2LongitudinalSafety(TestSubaruLongitudinalSafetyBase, TestSub
     for sid in range(0xFF):
       msg = b'\x03' + sid.to_bytes(1) + b'\x00' * 6
       self.assertFalse(self._tx(self._es_uds_msg(msg)))
+
+
+class TestSubaruGen1ImprezaTorqueStockLongitudinalSafety(TestSubaruGen1TorqueStockLongitudinalSafety):
+  FLAGS = SubaruSafetyFlags.IMPREZA_TORQUE
+  MAX_TORQUE_LOOKUP = [0], [3071]
+
+
+class TestSubaruGen1ImprezaTorqueLongitudinalSafety(TestSubaruGen1LongitudinalSafety):
+  FLAGS = SubaruSafetyFlags.LONG | SubaruSafetyFlags.IMPREZA_TORQUE
+  MAX_TORQUE_LOOKUP = [0], [3071]
+
+
+class TestSubaruGen2ImprezaTorqueIgnoredSafety(TestSubaruGen2TorqueStockLongitudinalSafety):
+  # the flag is gen1-only; gen2 keeps its 1000 cap
+  FLAGS = SubaruSafetyFlags.GEN2 | SubaruSafetyFlags.IMPREZA_TORQUE
 
 
 if __name__ == "__main__":

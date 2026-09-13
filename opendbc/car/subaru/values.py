@@ -26,6 +26,9 @@ class CarControllerParams:
     elif CP.carFingerprint == CAR.SUBARU_IMPREZA_2020:
       self.STEER_DELTA_UP = 35
       self.STEER_MAX = 1439
+    elif CP.flags & SubaruFlags.IMPREZA_TORQUE:
+      # rate and driver-override limits deliberately unchanged; only the saturation point moves
+      self.STEER_MAX = 3071
     else:
       self.STEER_MAX = 2047
 
@@ -57,6 +60,7 @@ class SubaruSafetyFlags(IntFlag):
   GEN2 = 1
   LONG = 2
   PREGLOBAL_REVERSED_DRIVER_TORQUE = 4
+  IMPREZA_TORQUE = 8
 
 
 class SubaruFlags(IntFlag):
@@ -73,6 +77,9 @@ class SubaruFlags(IntFlag):
   PREGLOBAL = 16
   HYBRID = 32
   LKAS_ANGLE = 64
+
+  # User-enabled flag, set from a Param in interface.py — never from platform config
+  IMPREZA_TORQUE = 128
 
 
 GLOBAL_ES_ADDR = 0x787
