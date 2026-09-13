@@ -3,6 +3,7 @@ import unittest
 
 from opendbc.car.volkswagen.values import VolkswagenSafetyFlags
 from opendbc.car.structs import CarParams
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety
@@ -141,6 +142,17 @@ class TestVolkswagenPqLongSafety(TestVolkswagenPqSafetyBase, common.Longitudinal
     self.safety = libsafety_py.libsafety
     self.safety.set_safety_hooks(CarParams.SafetyModel.volkswagenPq, VolkswagenSafetyFlags.LONG_CONTROL)
     self.safety.init_tests()
+
+  def test_always_on_lateral_denied(self):
+    # PQ populates acc_main_on from stock CAN (longitudinal only) and routes HCA through the shared
+    # steer_torque_cmd_checks(), so an unscoped AOL gate would open lateral here; AOL is Subaru-only
+    self.safety.set_controls_allowed(False)
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self._rx(self._motor_5_msg(main_switch=True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._set_prev_torque(0)
+    self.assertFalse(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
 
   # stock cruise controls are entirely bypassed under openpilot longitudinal control
   def test_disable_control_allowed_from_cruise(self):

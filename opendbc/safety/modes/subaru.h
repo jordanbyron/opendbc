@@ -313,6 +313,9 @@ static safety_config subaru_init(uint16_t param) {
   subaru_sng = GET_FLAG(param, SUBARU_PARAM_SNG) && !subaru_gen2 && !subaru_longitudinal;
 #endif
 
+  // Subaru is the only mode AOL has been validated on; the shared lateral.h gate stays closed elsewhere
+  aol_supported = true;
+
   // reset_sample() is defined after the mode headers are included, so flush by hand
   for (int i = 0; i < MAX_SAMPLE_VALS; i++) {
     update_sample(&subaru_throttle_pedal, 0);

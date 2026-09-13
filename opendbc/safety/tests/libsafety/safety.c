@@ -106,6 +106,10 @@ bool get_aol_allowed(void){
   return aol_allowed;
 }
 
+bool get_aol_supported(void){
+  return aol_supported;
+}
+
 float get_vehicle_speed_min(void){
   return vehicle_speed.min / VEHICLE_SPEED_FACTOR;
 }

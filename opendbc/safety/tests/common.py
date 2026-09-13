@@ -866,6 +866,17 @@ class SafetyTest(SafetyTestBase):
   def test_default_controls_not_allowed(self):
     self.assertFalse(self.safety.get_controls_allowed())
 
+  def test_always_on_lateral_support_is_opt_in(self):
+    # aol_allowed widens the steering gate in the shared lateral.h, so any mode that has not opted in
+    # must leave it closed no matter what the alt-experience bit says
+    supported = isinstance(self, AlwaysOnLateralSafetyTestBase)
+    self.assertEqual(supported, self.safety.get_aol_supported())
+    if not supported:
+      self.safety.set_controls_allowed(False)
+      self.safety.set_alternative_experience(self.safety.get_alternative_experience() |
+                                             ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+      self.assertFalse(self.safety.get_aol_allowed())
+
   def test_manually_enable_controls_allowed(self):
     self.safety.set_controls_allowed(1)
     self.assertTrue(self.safety.get_controls_allowed())
