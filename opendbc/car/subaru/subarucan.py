@@ -3,11 +3,11 @@ from opendbc.car.subaru.values import CanBus
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 
-# stop-and-go spoof floors, in raw DBC counts. Kept tiny: panda independently rejects anything
-# above what the engine/brake ECUs themselves reported, and these are the floor under that bound.
-SNG_THROTTLE_SPOOF = 5   # Throttle_Pedal, 5/255
-SNG_BRAKE_SPOOF = 5      # Brake_Pedal, 5/4095
-SNG_SPEED_SPOOF = 3      # Brake_Pedal->Speed, 3 counts of 0.05625 kph
+# stop-and-go spoof values, identical to FrogPilot's: a light throttle tap (5/255) so EyeSight resumes,
+# 3 km/h on the mirrored Brake_Pedal so its hold doesn't time out, and a light brake (5/4095) on cancel.
+SNG_THROTTLE_SPOOF = 5   # Throttle_Pedal, raw counts
+SNG_BRAKE_SPOOF = 5      # Brake_Pedal, raw counts
+SNG_SPEED_SPOOF = 3      # Brake_Pedal->Speed, km/h (physical units, the packer scales it)
 
 
 def create_steering_control(packer, apply_torque, steer_req):
@@ -292,8 +292,7 @@ def create_throttle(packer, counter, throttle_msg, throttle_cmd):
                                          "Throttle_Cruise", "Throttle_Combo", "Signal3", "Off_Accel"]}
   values["COUNTER"] = counter % 0x10
   if throttle_cmd:
-    # never report *less* pedal than the driver is actually applying
-    values["Throttle_Pedal"] = max(int(throttle_msg["Throttle_Pedal"]), SNG_THROTTLE_SPOOF)
+    values["Throttle_Pedal"] = SNG_THROTTLE_SPOOF
   return packer.make_can_msg("Throttle", CanBus.camera, values)
 
 
@@ -302,9 +301,9 @@ def create_brake_pedal(packer, counter, brake_pedal_msg, speed_cmd, brake_cmd):
                                             "Signal3", "Brake_Pedal", "Signal4"]}
   values["COUNTER"] = counter % 0x10
   if speed_cmd:
-    values["Speed"] = SNG_SPEED_SPOOF * 0.05625
+    values["Speed"] = SNG_SPEED_SPOOF
   if brake_cmd:
-    values["Brake_Pedal"] = max(int(brake_pedal_msg["Brake_Pedal"]), SNG_BRAKE_SPOOF)
+    values["Brake_Pedal"] = SNG_BRAKE_SPOOF
     values["Brake_Lights"] = 1
   return packer.make_can_msg("Brake_Pedal", CanBus.camera, values)
 

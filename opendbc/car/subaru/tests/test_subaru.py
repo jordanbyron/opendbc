@@ -100,18 +100,21 @@ class TestSubaruStopAndGo(unittest.TestCase):
         self.assertAlmostEqual(parser.vl["Brake_Pedal"][sig], val, msg=sig)
     self.assertEqual(parser.vl["Brake_Pedal"]["COUNTER"], 19 % 0x10)
 
+    # FrogPilot parity: the spoof values replace whatever the car reported, they are not floors
     decode(subarucan.create_throttle(packer, 0, dict(throttle_msg, Throttle_Pedal=0), True))
     self.assertEqual(parser.vl["Throttle"]["Throttle_Pedal"], subarucan.SNG_THROTTLE_SPOOF)
     decode(subarucan.create_throttle(packer, 0, throttle_msg, True))
-    self.assertEqual(parser.vl["Throttle"]["Throttle_Pedal"], 40)
+    self.assertEqual(parser.vl["Throttle"]["Throttle_Pedal"], subarucan.SNG_THROTTLE_SPOOF)
 
-    decode(subarucan.create_brake_pedal(packer, 0, dict(brake_msg, Brake_Pedal=0), True, True))
+    decode(subarucan.create_brake_pedal(packer, 0, brake_msg, True, True))
     self.assertEqual(parser.vl["Brake_Pedal"]["Brake_Pedal"], subarucan.SNG_BRAKE_SPOOF)
     self.assertEqual(parser.vl["Brake_Pedal"]["Brake_Lights"], 1)
-    # Speed is a 0.05625 kph/bit field; the spoof constant is in raw counts
-    self.assertAlmostEqual(parser.vl["Brake_Pedal"]["Speed"], subarucan.SNG_SPEED_SPOOF * 0.05625)
+    # Speed is a 0.05625 kph/bit field; FrogPilot writes 3 (km/h, physical units), i.e. 53 raw counts
+    self.assertAlmostEqual(parser.vl["Brake_Pedal"]["Speed"], subarucan.SNG_SPEED_SPOOF, places=1)
+    self.assertEqual(subarucan.SNG_SPEED_SPOOF, 3)
 
-    decode(subarucan.create_brake_pedal(packer, 0, brake_msg, False, True))
+    # with neither command the car's own values pass straight through
+    decode(subarucan.create_brake_pedal(packer, 0, brake_msg, False, False))
     self.assertEqual(parser.vl["Brake_Pedal"]["Brake_Pedal"], 700)
     self.assertAlmostEqual(parser.vl["Brake_Pedal"]["Speed"], 11.98125)
 
@@ -147,17 +150,30 @@ class TestSubaruStopAndGoController(unittest.TestCase):
     self.CS.close_distance = close_distance
 
   def test_resume_pulse_length(self):
+    # FrogPilot's state machine: the first pulse is SNG_RESUME_FRAMES long, then the counter rests at -1
+    # so every later pulse is one frame longer. A re-trigger mid-pulse does not extend it.
     self._lead_pulls_away(3.5)
     for i in range(8):
       throttle_cmd, _ = self.CC.stop_and_go(self.cc, self.CS)
       self.assertEqual(throttle_cmd, i < SNG_RESUME_FRAMES, i)
+    self.assertEqual(self.CC.sng_acc_resume_cnt, -1)
 
-  def test_no_resume_on_driver_gas(self):
-    self._lead_pulls_away(3.5)
-    self.CS.out.gasPressed = True
+    # second trigger: close_distance rises again inside the window
+    self.CS.close_distance = 3.0
+    self.CC.stop_and_go(self.cc, self.CS)
+    self.CS.close_distance = 3.5
+    pulses = []
     for _ in range(8):
       throttle_cmd, _ = self.CC.stop_and_go(self.cc, self.CS)
-      self.assertFalse(throttle_cmd)
+      pulses.append(throttle_cmd)
+    self.assertEqual(sum(pulses), SNG_RESUME_FRAMES + 1)
+
+  def test_resume_pulse_ignores_driver_gas(self):
+    # FrogPilot does not mask the pulse on a driver gas press
+    self._lead_pulls_away(3.5)
+    self.CS.out.gasPressed = True
+    throttle_cmd, _ = self.CC.stop_and_go(self.cc, self.CS)
+    self.assertTrue(throttle_cmd)
 
   def test_no_resume_outside_distance_window(self):
     for close_distance in (SNG_ACC_MIN_DIST, SNG_ACC_MAX_DIST):
@@ -186,8 +202,19 @@ class TestSubaruStopAndGoController(unittest.TestCase):
     self.assertFalse(self.CC.manual_hold)
 
   def test_speed_spoof_waits_out_the_hold(self):
-    self._lead_pulls_away(0.)
-    for _ in range(SNG_HOLD_FRAMES + 1):
+    # roll first so standstill_start is latched on a real rising edge
+    self.CS.car_follow = 1
+    self.CS.out.standstill = False
+    self.CC.frame = 100
+    self.CC.stop_and_go(self.cc, self.CS)
+    self.CS.out.standstill = True
+    self.CS.close_distance = 0.
+    # FrogPilot evaluates the hold timer before latching the edge, so the very first stopped frame may
+    # emit speed_cmd against the stale standstill_start (here 0, so frame 100 > 0 + 50). Parity quirk.
+    _, speed_cmd = self.CC.stop_and_go(self.cc, self.CS)
+    self.assertTrue(speed_cmd)
+    self.CC.frame += 1
+    for _ in range(SNG_HOLD_FRAMES):
       _, speed_cmd = self.CC.stop_and_go(self.cc, self.CS)
       self.assertFalse(speed_cmd)
       self.CC.frame += 1
@@ -208,7 +235,8 @@ class TestSubaruStopAndGoController(unittest.TestCase):
       self.assertEqual(0x139 in addrs, frame % 2 == 0)
       for addr, _, dat in msgs:
         if addr == 0x40:
-          self.assertEqual(dat[1] & 0xF, frame % 0x10)
+          # re-based off the last stock frame's counter, as in FrogPilot
+          self.assertEqual(dat[1] & 0xF, (self.CS.throttle_msg["COUNTER"] + 1) % 0x10)
         elif addr == 0x139:
           self.assertEqual(dat[1] & 0xF, (frame // 2) % 0x10)
 

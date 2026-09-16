@@ -36,12 +36,11 @@ SUBARU_MAIN_BUS = 0
 SUBARU_ALT_BUS  = 1
 SUBARU_CAM_BUS  = 2
 
-SAMPLE_VALS = 6            # MAX_SAMPLE_VALS in declarations.h
+RX_WINDOW = 6              # enough frames for every rx check to see a valid counter sequence
 SPEED_TO_KPH = 0.05625     # Brake_Pedal->Speed, kph per count
-SPEED_COUNTS_PER_MS = 64
-SNG_THROTTLE_SPOOF = 5
+SNG_THROTTLE_SPOOF = 5     # FrogPilot's spoof values, in raw counts
 SNG_BRAKE_SPOOF = 5
-SNG_SPEED_SLACK = 64
+SNG_SPEED_SPOOF_KPH = 3
 
 
 def lkas_tx_msgs(alt_bus, lkas_msg=SubaruMsg.ES_LKAS):
@@ -286,21 +285,20 @@ class TestSubaruGen2ImprezaTorqueIgnoredSafety(TestSubaruGen2TorqueStockLongitud
 
 
 class TestSubaruGen1TorqueStockLongitudinalSngSafety(TestSubaruGen1TorqueStockLongitudinalSafety):
+  # Stop and Go, as in FrogPilot: openpilot re-sends Throttle (0x40) and Brake_Pedal (0x139) on the camera
+  # bus and panda blocks the stock copies main->cam. panda does not bound the mirrored fields and does not
+  # add an rx check for Brake_Pedal.
   FLAGS = SubaruSafetyFlags.SNG
   TX_MSGS = lkas_tx_msgs(SUBARU_MAIN_BUS) + sng_tx_msgs()
   FWD_BLACKLISTED_ADDRS = {**fwd_blacklisted_addr(), SUBARU_MAIN_BUS: [SubaruMsg.Throttle, SubaruMsg.Brake_Pedal]}
-  RELAY_MALFUNCTION_ADDRS = {SUBARU_MAIN_BUS: (SubaruMsg.ES_LKAS, SubaruMsg.ES_DashStatus, SubaruMsg.ES_LKAS_State,
-                                               SubaruMsg.ES_Infotainment),
-                             SUBARU_CAM_BUS: (SubaruMsg.Throttle, SubaruMsg.Brake_Pedal)}
 
   def setUp(self):
     super().setUp()
     self._rx_counters: dict[str, int] = defaultdict(int)
 
-  def _rx_sample_window(self, name, values, bus=SUBARU_MAIN_BUS):
-    # MAX_SAMPLE_VALS worth of frames, so the rolling max holds nothing but this value.
+  def _rx_window(self, name, values, bus=SUBARU_MAIN_BUS):
     # counters have to advance or the rx check invalidates the message part way through
-    for _ in range(SAMPLE_VALS):
+    for _ in range(RX_WINDOW):
       self._rx_counters[name] = (self._rx_counters[name] + 1) % 16
       msg = self.packer.make_can_msg_safety(name, bus, {**values, "COUNTER": self._rx_counters[name]})
       self.assertTrue(self._rx(msg))
@@ -308,39 +306,40 @@ class TestSubaruGen1TorqueStockLongitudinalSngSafety(TestSubaruGen1TorqueStockLo
   def _cam_throttle_msg(self, pedal):
     return self.packer.make_can_msg_safety("Throttle", SUBARU_CAM_BUS, {"Throttle_Pedal": pedal, "COUNTER": 0})
 
-  def _cam_brake_pedal_msg(self, brake=0, speed=0, lights=0):
-    values = {"Brake_Pedal": brake, "Speed": speed * SPEED_TO_KPH, "Brake_Lights": lights, "COUNTER": 0}
+  def _cam_brake_pedal_msg(self, brake=0, speed_kph=0, lights=0):
+    values = {"Brake_Pedal": brake, "Speed": speed_kph, "Brake_Lights": lights, "COUNTER": 0}
     return self.packer.make_can_msg_safety("Brake_Pedal", SUBARU_CAM_BUS, values)
 
-  def test_sng_throttle_limits(self):
-    # the mirror is deliberately engagement-independent, so both states must behave identically
+  def test_sng_mirrors_unbounded(self):
+    # FrogPilot parity: the mirrors are allowed regardless of engagement and regardless of field values,
+    # so EyeSight is never starved of either message while the stock copies are blocked
     for controls_allowed in (False, True):
-      for reported, limit in ((0, SNG_THROTTLE_SPOOF), (200, 200)):
-        with self.subTest(controls_allowed=controls_allowed, reported=reported):
-          self._rx_sample_window("Throttle", {"Throttle_Pedal": reported})
-          self.safety.set_controls_allowed(controls_allowed)
-          self.assertTrue(self._tx(self._cam_throttle_msg(0)))
-          self.assertTrue(self._tx(self._cam_throttle_msg(limit)))
-          self.assertFalse(self._tx(self._cam_throttle_msg(limit + 1)))
+      with self.subTest(controls_allowed=controls_allowed):
+        self.safety.set_controls_allowed(controls_allowed)
+        for pedal in (0, SNG_THROTTLE_SPOOF, 255):
+          self.assertTrue(self._tx(self._cam_throttle_msg(pedal)))
+        for brake, speed in ((0, 0), (SNG_BRAKE_SPOOF, SNG_SPEED_SPOOF_KPH), (4095, 200)):
+          self.assertTrue(self._tx(self._cam_brake_pedal_msg(brake=brake, speed_kph=speed, lights=1)))
 
-  def test_sng_brake_pedal_limits(self):
-    for controls_allowed in (False, True):
-      for reported, limit in ((0, SNG_BRAKE_SPOOF), (400, 400)):
-        with self.subTest(controls_allowed=controls_allowed, reported=reported):
-          self._rx_sample_window("Brake_Pedal", {"Brake_Pedal": reported})
-          self.safety.set_controls_allowed(controls_allowed)
-          self.assertTrue(self._tx(self._cam_brake_pedal_msg(brake=0)))
-          self.assertTrue(self._tx(self._cam_brake_pedal_msg(brake=limit)))
-          self.assertFalse(self._tx(self._cam_brake_pedal_msg(brake=limit + 1)))
+  def test_sng_stock_copies_pass_on_cam_bus_without_relay_fault(self):
+    # a stock 0x40/0x139 seen on the camera bus must not be treated as a relay malfunction (FrogPilot
+    # blocks by fwd hook only; nothing arms stock_ecu_check for these)
+    self._rx(self._cam_throttle_msg(0))
+    self._rx(self._cam_brake_pedal_msg())
+    self.assertFalse(self.safety.get_relay_malfunction())
 
-  def test_sng_speed_limits(self):
-    for speed_kph in (0, 20, 80):
-      with self.subTest(speed_kph=speed_kph):
-        self._rx_sample_window("Wheel_Speeds", {s: speed_kph for s in ("FR", "FL", "RR", "RL")})
-        speed_ms = round(self.safety.get_vehicle_speed_max() * 1000)
-        limit = ((speed_ms * SPEED_COUNTS_PER_MS) // 1000) + SNG_SPEED_SLACK
-        self.assertTrue(self._tx(self._cam_brake_pedal_msg(speed=limit)))
-        self.assertFalse(self._tx(self._cam_brake_pedal_msg(speed=limit + 1)))
+  def test_sng_no_brake_pedal_rx_check(self):
+    # the rx checks are the stock five: the config is valid without ever seeing Brake_Pedal
+    self._reset_safety_hooks()
+    self._rx_counters.clear()
+    for name, values in (("Throttle", {"Throttle_Pedal": 0}),
+                         ("Steering_Torque", {"Steer_Torque_Sensor": 0}),
+                         ("Wheel_Speeds", {s: 0 for s in ("FR", "FL", "RR", "RL")}),
+                         ("Brake_Status", {"Brake": 0}),
+                         ("CruiseControl", {"Cruise_On": 1})):
+      self._rx_window(name, values)
+    self.safety.safety_tick_current_safety_config()
+    self.assertTrue(self.safety.safety_config_valid())
 
   def test_sng_throttle_rx_not_user_gas(self):
     # our own copy on the camera bus must never read back as a driver gas press
@@ -366,34 +365,22 @@ class TestSubaruGen1ImprezaTorqueSngSafety(TestSubaruGen1TorqueStockLongitudinal
     self.assertFalse(self._tx(self._torque_cmd_msg(3072)))
     self.assertFalse(self.safety.get_controls_allowed())
 
-  def test_aol_requires_sng_brake_pedal_rx(self):
-    # the one coupling the three features create: SNG adds 0x139 to the rx checks, and aol_allowed
-    # keys off safety_rx_checks_invalid, so a missing or off-rate Brake_Pedal now disables always-on
-    # lateral as well as stop-and-go
-    other_checked_msgs = (("Throttle", {"Throttle_Pedal": 0}),
-                          ("Steering_Torque", {"Steer_Torque_Sensor": 0}),
-                          ("Wheel_Speeds", {s: 0 for s in ("FR", "FL", "RR", "RL")}),
-                          ("Brake_Status", {"Brake": 0}),
-                          ("CruiseControl", {"Cruise_On": 1}))
-
-    for brake_pedal_seen in (False, True):
-      with self.subTest(brake_pedal_seen=brake_pedal_seen):
-        self._reset_safety_hooks()
-        self._rx_counters.clear()
-        self._set_aol_experience(True)
-
-        for name, values in other_checked_msgs:
-          self._rx_sample_window(name, values)
-        if brake_pedal_seen:
-          self._rx_sample_window("Brake_Pedal", {"Brake_Pedal": 0})
-
-        self.safety.safety_tick_current_safety_config()
-        self.assertEqual(brake_pedal_seen, self.safety.safety_config_valid())
-
-        # aol_allowed is only recomputed in the rx hook
-        self._set_aol_acc_main(True)
-        self.assertEqual(brake_pedal_seen, self.safety.get_aol_allowed())
-        self._assert_aol_lateral(brake_pedal_seen)
+  def test_aol_independent_of_brake_pedal_rx(self):
+    # SNG adds no rx check, so always-on lateral is unaffected by whether Brake_Pedal was ever seen
+    self._reset_safety_hooks()
+    self._rx_counters.clear()
+    self._set_aol_experience(True)
+    for name, values in (("Throttle", {"Throttle_Pedal": 0}),
+                         ("Steering_Torque", {"Steer_Torque_Sensor": 0}),
+                         ("Wheel_Speeds", {s: 0 for s in ("FR", "FL", "RR", "RL")}),
+                         ("Brake_Status", {"Brake": 0}),
+                         ("CruiseControl", {"Cruise_On": 1})):
+      self._rx_window(name, values)
+    self.safety.safety_tick_current_safety_config()
+    self.assertTrue(self.safety.safety_config_valid())
+    self._set_aol_acc_main(True)
+    self.assertTrue(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(True)
 
 
 class TestSubaruGen2TorqueStockLongitudinalSngIgnoredSafety(TestSubaruGen2TorqueStockLongitudinalSafety):

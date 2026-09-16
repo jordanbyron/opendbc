@@ -12,6 +12,7 @@ MAX_STEER_RATE = 25  # deg/s
 MAX_STEER_RATE_FRAMES = 7  # tx control frames needed before torque can be cut
 
 # stop and go: EyeSight only reports Close_Distance in this window when the lead is actually pulling away
+# (constants and state machine mirror FrogPilot's carcontroller.stop_and_go)
 SNG_ACC_MIN_DIST = 3
 SNG_ACC_MAX_DIST = 4.5
 SNG_RESUME_FRAMES = 5
@@ -34,27 +35,50 @@ class CarController(CarControllerBase):
     self.standstill_start = 0
     self.prev_close_distance = 0
     self.prev_cruise_state = 0
-    self.sng_resume_cnt = 0
+    self.sng_acc_resume = False
+    self.sng_acc_resume_cnt = 0
 
-  # Stop and Go auto-resume, original implementation by martinl (subaru-community)
+  # Stop and Go auto-resume, original implementation by martinl (subaru-community), as carried in FrogPilot
   def stop_and_go(self, CC, CS):
+    speed_cmd = False
+    throttle_cmd = False
+
     # driver braked to a stop with no lead: EyeSight held on its own, never auto-resume from that
     if CS.car_follow == 0 and CS.cruise_state == 3 and CS.out.standstill and self.prev_cruise_state == 1:
       self.manual_hold = True
     if not CS.out.standstill:
       self.manual_hold = False
 
-    if CC.enabled and CS.car_follow == 1 and CS.cruise_state == 3 and not self.manual_hold and \
-       CS.close_distance > self.prev_close_distance and SNG_ACC_MIN_DIST < CS.close_distance < SNG_ACC_MAX_DIST:
-      self.sng_resume_cnt = SNG_RESUME_FRAMES
+    trigger_resume = CC.enabled
+    trigger_resume &= CS.car_follow == 1
+    trigger_resume &= CS.close_distance > self.prev_close_distance
+    trigger_resume &= CS.cruise_state == 3
+    trigger_resume &= not self.manual_hold
+    trigger_resume &= SNG_ACC_MIN_DIST < CS.close_distance < SNG_ACC_MAX_DIST
+    if trigger_resume:
+      self.sng_acc_resume = True
 
+    # FrogPilot evaluates the hold timer before latching the standstill edge, so the first stopped frame
+    # can emit one speed_cmd against the previous standstill_start. Kept as-is for parity.
+    if CC.enabled and CS.car_follow == 1 and CS.out.standstill and self.frame > self.standstill_start + SNG_HOLD_FRAMES:
+      speed_cmd = True
     if CS.out.standstill and not self.prev_standstill:
       self.standstill_start = self.frame
-    speed_cmd = CC.enabled and CS.car_follow == 1 and CS.out.standstill and self.frame > self.standstill_start + SNG_HOLD_FRAMES
 
-    throttle_cmd = self.sng_resume_cnt > 0 and CC.enabled and not CS.out.gasPressed
-    self.sng_resume_cnt = max(self.sng_resume_cnt - 1, 0)
-    self.prev_standstill, self.prev_cruise_state, self.prev_close_distance = CS.out.standstill, CS.cruise_state, CS.close_distance
+    self.prev_standstill = CS.out.standstill
+    self.prev_cruise_state = CS.cruise_state
+
+    # resume pulse: SNG_RESUME_FRAMES frames of spoofed throttle, then the counter rests at -1 (FrogPilot quirk:
+    # every pulse after the first is one frame longer). A re-trigger mid-pulse is a no-op.
+    if self.sng_acc_resume:
+      if self.sng_acc_resume_cnt < SNG_RESUME_FRAMES:
+        throttle_cmd = True
+        self.sng_acc_resume_cnt += 1
+      else:
+        self.sng_acc_resume = False
+        self.sng_acc_resume_cnt = -1
+
+    self.prev_close_distance = CS.close_distance
     return throttle_cmd, speed_cmd
 
   def update(self, CC, CS, now_nanos):
@@ -140,10 +164,10 @@ class CarController(CarControllerBase):
           can_sends.append(subarucan.create_es_infotainment(self.packer, self.frame // 10, CS.es_infotainment_msg, hud_control.visualAlert))
 
       if self.CP.flags & SubaruFlags.SNG:
-        # panda blocks the stock copies of these, so openpilot's are the only ones EyeSight sees and
-        # the counters must be its own continuous sequence rather than a re-base off the last stock frame
+        # panda blocks the stock copies of these, so openpilot's are the only ones EyeSight sees.
+        # Throttle re-bases its counter off the last stock frame, Brake_Pedal runs at half rate (as in FrogPilot)
         throttle_cmd, speed_cmd = self.stop_and_go(CC, CS)
-        can_sends.append(subarucan.create_throttle(self.packer, self.frame, CS.throttle_msg, throttle_cmd))
+        can_sends.append(subarucan.create_throttle(self.packer, CS.throttle_msg["COUNTER"] + 1, CS.throttle_msg, throttle_cmd))
         if self.frame % 2 == 0:
           can_sends.append(subarucan.create_brake_pedal(self.packer, self.frame // 2, CS.brake_pedal_msg, speed_cmd, pcm_cancel_cmd))
 

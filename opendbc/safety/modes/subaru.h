@@ -40,13 +40,6 @@
 #define MSG_SUBARU_ES_STATIC_1           0x325U
 #define MSG_SUBARU_ES_STATIC_2           0x121U
 
-// stop-and-go mirror bounds, in raw signal counts. openpilot may never report more throttle, brake
-// pressure or speed to EyeSight than the car itself did, except for these tiny floors.
-#define SUBARU_SNG_THROTTLE_SPOOF      5   // Throttle_Pedal counts, 5/255
-#define SUBARU_SNG_BRAKE_SPOOF         5   // Brake_Pedal counts, 5/4095
-#define SUBARU_SNG_SPEED_COUNTS_PER_MS 64  // Brake_Pedal->Speed is 0.05625 kph/bit
-#define SUBARU_SNG_SPEED_SLACK         64  // 1 m/s of headroom over the measured wheel speed
-
 #define SUBARU_MAIN_BUS 0U
 #define SUBARU_ALT_BUS  1U
 #define SUBARU_CAM_BUS  2U
@@ -71,9 +64,11 @@
   {MSG_SUBARU_ES_STATIC_1,       SUBARU_MAIN_BUS, 8, .check_relay = false}, \
   {MSG_SUBARU_ES_STATIC_2,       SUBARU_MAIN_BUS, 8, .check_relay = false}, \
 
+// stop-and-go mirrors of the stock Throttle/Brake_Pedal onto the camera bus. Not relay-checked:
+// subaru_fwd_hook blocks the stock copies main->cam while SNG is on, exactly as FrogPilot does.
 #define SUBARU_SNG_ADDITIONAL_TX_MSGS() \
-  {MSG_SUBARU_Throttle,          SUBARU_CAM_BUS,  8, .check_relay = true}, \
-  {MSG_SUBARU_Brake_Pedal,       SUBARU_CAM_BUS,  8, .check_relay = true}, \
+  {MSG_SUBARU_Throttle,          SUBARU_CAM_BUS,  8, .check_relay = false}, \
+  {MSG_SUBARU_Brake_Pedal,       SUBARU_CAM_BUS,  8, .check_relay = false}, \
 
 #define SUBARU_COMMON_RX_CHECKS(alt_bus)                                                                                                         \
   {.msg = {{MSG_SUBARU_Throttle,        SUBARU_MAIN_BUS, 8, 100U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}}, \
@@ -82,19 +77,10 @@
   {.msg = {{MSG_SUBARU_Brake_Status,    alt_bus,         8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{MSG_SUBARU_CruiseControl,   alt_bus,         8, 20U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
-// Brake_Pedal's 50U: no Subaru DBC carries cycle times, but openpilot's CAN parser enforced
-// ("Brake_Pedal", 50) and ("Throttle", 100) on every global Subaru through 0.9.7.
-// If the real rate is lower the car simply never engages; drop this check and the tx_hook brake_pedal bound together.
-#define SUBARU_SNG_RX_CHECKS(alt_bus) \
-  SUBARU_COMMON_RX_CHECKS(alt_bus) \
-  {.msg = {{MSG_SUBARU_Brake_Pedal,     SUBARU_MAIN_BUS, 8, 50U, .max_counter = 15U, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
-
 static bool subaru_gen2 = false;
 static bool subaru_longitudinal = false;
 static bool subaru_impreza_torque = false;
-
-static struct sample_t subaru_throttle_pedal;
-static struct sample_t subaru_brake_pedal;
+static bool subaru_sng = false;
 
 static uint32_t subaru_get_checksum(const CANPacket_t *msg) {
   return (uint8_t)msg->data[0];
@@ -148,13 +134,6 @@ static void subaru_rx_hook(const CANPacket_t *msg) {
 
   if ((msg->addr == MSG_SUBARU_Throttle) && (msg->bus == SUBARU_MAIN_BUS)) {
     gas_pressed = msg->data[4] != 0U;
-    update_sample(&subaru_throttle_pedal, (int)msg->data[4]);
-  }
-
-  if ((msg->addr == MSG_SUBARU_Brake_Pedal) && (msg->bus == SUBARU_MAIN_BUS)) {
-    int brake_pedal_new;
-    brake_pedal_new = ((GET_BYTES(msg, 4, 2) >> 4) & 0xFFFU);
-    update_sample(&subaru_brake_pedal, brake_pedal_new);
   }
 }
 
@@ -226,30 +205,27 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     violation |= !(is_tester_present || is_button_rdbi);
   }
 
-  // stop-and-go mirror: openpilot may pass through what the ECU recently reported, or apply the
-  // small spoof floor. It may never report more throttle, brake pressure or speed than the car did.
-  // This cannot be gated on controls_allowed: panda blocks the stock copies for the whole drive, so
-  // dropping frames while disengaged would starve EyeSight of both messages.
-  if (msg->addr == MSG_SUBARU_Throttle) {
-    int throttle_pedal = msg->data[4];
-    int throttle_max = SAFETY_MAX(subaru_throttle_pedal.max, SUBARU_SNG_THROTTLE_SPOOF);
-    violation |= (throttle_pedal > throttle_max);
-  }
-
-  if (msg->addr == MSG_SUBARU_Brake_Pedal) {
-    int spoof_speed = (GET_BYTES(msg, 2, 2) & 0xFFFU);
-    int brake_pedal = ((GET_BYTES(msg, 4, 2) >> 4) & 0xFFFU);
-    // vehicle_speed is m/s scaled by VEHICLE_SPEED_FACTOR (1000)
-    int speed_max = ((vehicle_speed.max * SUBARU_SNG_SPEED_COUNTS_PER_MS) / 1000) + SUBARU_SNG_SPEED_SLACK;
-    int brake_max = SAFETY_MAX(subaru_brake_pedal.max, SUBARU_SNG_BRAKE_SPOOF);
-    violation |= (spoof_speed > speed_max);
-    violation |= (brake_pedal > brake_max);
+  // stop-and-go mirrors: only ever allowed while SNG is on (the TX allowlist already enforces this,
+  // the explicit gate mirrors FrogPilot's tx_hook). No field bounds, as in FrogPilot.
+  if ((msg->addr == MSG_SUBARU_Throttle) || (msg->addr == MSG_SUBARU_Brake_Pedal)) {
+    violation |= !subaru_sng;
   }
 
   if (violation){
     tx = false;
   }
   return tx;
+}
+
+// While SNG is on, openpilot's mirrored Throttle/Brake_Pedal replace the stock ones on the camera
+// bus, so the stock copies must not be forwarded main->cam. Ported from FrogPilot's subaru_fwd_hook;
+// the cam->main LKAS/long blocking it also did is handled by the generic check_relay blocking here.
+static bool subaru_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+  if (bus_num == (int)SUBARU_MAIN_BUS) {
+    block_msg = subaru_sng && ((addr == (int)MSG_SUBARU_Throttle) || (addr == (int)MSG_SUBARU_Brake_Pedal));
+  }
+  return block_msg;
 }
 
 static safety_config subaru_init(uint16_t param) {
@@ -284,18 +260,14 @@ static safety_config subaru_init(uint16_t param) {
     SUBARU_COMMON_RX_CHECKS(SUBARU_MAIN_BUS)
   };
 
-  static RxCheck subaru_sng_rx_checks[] = {
-    SUBARU_SNG_RX_CHECKS(SUBARU_MAIN_BUS)
-  };
-
   static RxCheck subaru_gen2_rx_checks[] = {
     SUBARU_COMMON_RX_CHECKS(SUBARU_ALT_BUS)
   };
 
   const uint16_t SUBARU_PARAM_GEN2 = 1;
-  bool subaru_sng = false;
 
   subaru_gen2 = GET_FLAG(param, SUBARU_PARAM_GEN2);
+  subaru_sng = false;
 
   // Deliberately not inside #ifdef ALLOW_DEBUG: this fork never builds with RELEASE set
   // (panda/SConscript defines ALLOW_DEBUG unless RELEASE is in the env). If a RELEASE build
@@ -317,12 +289,6 @@ static safety_config subaru_init(uint16_t param) {
   // Subaru is the only mode AOL has been validated on; the shared lateral.h gate stays closed elsewhere
   aol_supported = true;
 
-  // reset_sample() is defined after the mode headers are included, so flush by hand
-  for (int i = 0; i < MAX_SAMPLE_VALS; i++) {
-    update_sample(&subaru_throttle_pedal, 0);
-    update_sample(&subaru_brake_pedal, 0);
-  }
-
   safety_config ret;
   if (subaru_gen2) {
     ret = subaru_longitudinal ? BUILD_SAFETY_CFG(subaru_gen2_rx_checks, SUBARU_GEN2_LONG_TX_MSGS) : \
@@ -330,7 +296,7 @@ static safety_config subaru_init(uint16_t param) {
   } else if (subaru_longitudinal) {
     ret = BUILD_SAFETY_CFG(subaru_rx_checks, SUBARU_LONG_TX_MSGS);
   } else if (subaru_sng) {
-    ret = BUILD_SAFETY_CFG(subaru_sng_rx_checks, SUBARU_SNG_TX_MSGS);
+    ret = BUILD_SAFETY_CFG(subaru_rx_checks, SUBARU_SNG_TX_MSGS);
   } else {
     ret = BUILD_SAFETY_CFG(subaru_rx_checks, SUBARU_TX_MSGS);
   }
@@ -341,6 +307,7 @@ const safety_hooks subaru_hooks = {
   .init = subaru_init,
   .rx = subaru_rx_hook,
   .tx = subaru_tx_hook,
+  .fwd = subaru_fwd_hook,
   .get_counter = subaru_get_counter,
   .get_checksum = subaru_get_checksum,
   .compute_checksum = subaru_compute_checksum,
