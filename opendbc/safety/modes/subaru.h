@@ -164,7 +164,7 @@ static bool subaru_tx_hook(const CANPacket_t *msg) {
     bool steer_req = (msg->data[3] >> 5) & 1U;
 
     const TorqueSteeringLimits limits = subaru_gen2 ? SUBARU_GEN2_STEERING_LIMITS :
-                                        subaru_impreza_torque ? SUBARU_IMPREZA_STEERING_LIMITS : SUBARU_STEERING_LIMITS;
+                                        (subaru_impreza_torque ? SUBARU_IMPREZA_STEERING_LIMITS : SUBARU_STEERING_LIMITS);
     violation |= steer_torque_cmd_checks(desired_torque, steer_req, limits);
   }
 

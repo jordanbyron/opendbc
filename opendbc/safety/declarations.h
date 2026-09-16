@@ -265,7 +265,6 @@ extern int cruise_button_prev;
 extern bool safety_rx_checks_invalid;
 
 extern bool aol_allowed;
-extern bool aol_rx_invalid;  // latched in the rx hook, cleared only by safety_tick
 // opt-in per safety mode: AOL widens the steering gate in the shared lateral.h, so a mode that
 // never sets this can't be steered with controls_allowed false even if the alt-experience bit is set
 extern bool aol_supported;

@@ -58,7 +58,6 @@ bool acc_main_on = false;  // referred to as "ACC off" in ISO 15622:2018
 int cruise_button_prev = 0;
 bool safety_rx_checks_invalid = false;
 bool aol_allowed = false;
-bool aol_rx_invalid = false;
 bool aol_supported = false;
 
 // for safety modes with torque steering control
@@ -196,9 +195,9 @@ bool safety_rx_hook(const CANPacket_t *msg) {
     current_hooks->rx(msg);
   }
 
-  if (whitelisted && !valid) {
-    aol_rx_invalid = true;
-  }
+  // FrogPilot: one bad whitelisted frame latches the shared flag until the next safety_tick, so the
+  // AOL gate closes and pandaState.safetyRxChecksInvalid tells openpilot to drop AOL and re-ramp torque
+  safety_rx_checks_invalid |= whitelisted && !valid;
 
   // Handles gas, brake, and regen paddle
   generic_rx_checks();
@@ -344,7 +343,6 @@ void safety_tick(const safety_config *cfg) {
   }
 
   safety_rx_checks_invalid = rx_checks_invalid;
-  aol_rx_invalid = rx_checks_invalid;
   // aol_allowed is otherwise only recomputed on RX, so total CAN loss would leave it stale
   if (rx_checks_invalid) {
     aol_allowed = false;
@@ -377,7 +375,7 @@ static void generic_rx_checks(void) {
   steering_disengage_prev = steering_disengage;
 
   // never sets controls_allowed; it only widens the steering gate in lateral.h
-  aol_allowed = aol_supported && !safety_rx_checks_invalid && !aol_rx_invalid && !steering_disengage && acc_main_on &&
+  aol_allowed = aol_supported && !safety_rx_checks_invalid && !steering_disengage && acc_main_on &&
                 ((alternative_experience & ALT_EXP_ALWAYS_ON_LATERAL) != 0);
 }
 
@@ -469,7 +467,6 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
   aol_allowed = false;
-  aol_rx_invalid = false;
   aol_supported = false;  // re-armed by the mode's init() below, so it can never leak across a mode change
 
   current_safety_config.rx_checks = NULL;

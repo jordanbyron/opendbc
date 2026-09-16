@@ -79,7 +79,7 @@ class TestSubaruStopAndGo(unittest.TestCase):
     packer = CANPacker(DBC[CAR.SUBARU_IMPREZA][Bus.pt])
     parser = CANParser(DBC[CAR.SUBARU_IMPREZA][Bus.pt], [("Throttle", 100), ("Brake_Pedal", 50)], CanBus.camera)
 
-    throttle_msg = {"CHECKSUM": 0, "COUNTER": 0, "Signal1": 3, "Engine_RPM": 1234, "Neutral": 1,
+    throttle_msg = {"CHECKSUM": 0, "COUNTER": 0, "Signal1": 3, "Engine_RPM": 1234, "Signal2": 3, "Neutral": 1,
                     "Throttle_Pedal": 40, "Throttle_Cruise": 41, "Throttle_Combo": 42, "Signal3": 5, "Off_Accel": 6}
     brake_msg = {"CHECKSUM": 0, "COUNTER": 0, "Signal1": 3, "Speed": 11.98125, "Signal2": 7,
                  "Brake_Lights": 0, "Signal3": 1, "Brake_Pedal": 700, "Signal4": 4242}
@@ -112,6 +112,13 @@ class TestSubaruStopAndGo(unittest.TestCase):
     # Speed is a 0.05625 kph/bit field; FrogPilot writes 3 (km/h, physical units), i.e. 53 raw counts
     self.assertAlmostEqual(parser.vl["Brake_Pedal"]["Speed"], subarucan.SNG_SPEED_SPOOF, places=1)
     self.assertEqual(subarucan.SNG_SPEED_SPOOF, 3)
+
+    # every stock bit outside COUNTER/CHECKSUM survives the mirror: pack the same values with the stock
+    # message name and compare the raw bytes (bits 29-30 had no DBC signal before and were being zeroed)
+    stock = packer.make_can_msg("Throttle", CanBus.main, {**throttle_msg, "Signal2": 3, "Neutral": 1, "Engine_RPM": 0x1FFF})
+    mirror = subarucan.create_throttle(packer, 0, {**throttle_msg, "Signal2": 3, "Neutral": 1, "Engine_RPM": 0x1FFF}, False)
+    self.assertEqual(bytes(stock[1])[2:], bytes(mirror[1])[2:])
+    self.assertEqual(bytes(mirror[1])[3] & 0x60, 0x60)
 
     # with neither command the car's own values pass straight through
     decode(subarucan.create_brake_pedal(packer, 0, brake_msg, False, False))

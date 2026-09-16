@@ -73,7 +73,7 @@ def create_es_distance(packer, frame, es_distance_msg, bus, pcm_cancel_cmd, long
   return packer.make_can_msg("ES_Distance", bus, values)
 
 
-def create_es_lkas_state(packer, frame, es_lkas_state_msg, enabled, visual_alert, left_line, right_line, left_lane_depart, right_lane_depart):
+def create_es_lkas_state(packer, frame, es_lkas_state_msg, lat_active, visual_alert, left_line, right_line, left_lane_depart, right_lane_depart):
   values = {s: es_lkas_state_msg[s] for s in [
     "CHECKSUM",
     "LKAS_Alert_Msg",
@@ -125,9 +125,12 @@ def create_es_lkas_state(packer, frame, es_lkas_state_msg, enabled, visual_alert
     elif right_lane_depart:
       values["LKAS_Alert"] = 11  # Right lane departure dash alert
 
-  if enabled:
+  # keyed on latActive rather than enabled (FrogPilot), so the cluster shows LKAS while Always On Lateral steers
+  if lat_active:
     values["LKAS_ACTIVE"] = 1  # Show LKAS lane lines
     values["LKAS_Dash_State"] = 2  # Green enabled indicator
+    values["LKAS_Left_Line_Enable"] = 1
+    values["LKAS_Right_Line_Enable"] = 1
   else:
     values["LKAS_Dash_State"] = 0  # LKAS Not enabled
 
@@ -288,7 +291,8 @@ def create_es_static_2(packer):
 
 
 def create_throttle(packer, counter, throttle_msg, throttle_cmd):
-  values = {s: throttle_msg[s] for s in ["CHECKSUM", "Signal1", "Engine_RPM", "Neutral", "Throttle_Pedal",
+  # every non-counter/checksum bit of the stock frame is mirrored, as in FrogPilot (Signal2 covers bits 29-30)
+  values = {s: throttle_msg[s] for s in ["CHECKSUM", "Signal1", "Engine_RPM", "Signal2", "Neutral", "Throttle_Pedal",
                                          "Throttle_Cruise", "Throttle_Combo", "Signal3", "Off_Accel"]}
   values["COUNTER"] = counter % 0x10
   if throttle_cmd:
