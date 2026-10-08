@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from opendbc.car.honda.values import HondaSafetyFlags
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.car.structs import CarParams
@@ -224,6 +225,16 @@ class HondaBase(common.CarSafetyTest):
   def test_steer_safety_check(self):
     self.safety.set_controls_allowed(0)
     self.assertTrue(self._tx(self._send_steer_msg(0x0000)))
+    self.assertFalse(self._tx(self._send_steer_msg(0x1000)))
+
+  def test_always_on_lateral_denied(self):
+    # Honda populates acc_main_on from stock CAN, so it would satisfy every generic AOL precondition;
+    # AOL is Subaru-only and must stay closed here
+    self.safety.set_controls_allowed(0)
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self._rx(self._acc_state_msg(True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertFalse(self.safety.get_aol_allowed())
     self.assertFalse(self._tx(self._send_steer_msg(0x1000)))
 
 

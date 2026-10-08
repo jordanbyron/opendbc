@@ -943,6 +943,17 @@ class SafetyTest(SafetyTestBase):
   def test_default_controls_not_allowed(self):
     self.assertFalse(self.safety.get_controls_allowed())
 
+  def test_always_on_lateral_support_is_opt_in(self):
+    # aol_allowed widens the steering gate in the shared lateral.h, so any mode that has not opted in
+    # must leave it closed no matter what the alt-experience bit says
+    supported = isinstance(self, AlwaysOnLateralSafetyTestBase)
+    self.assertEqual(supported, self.safety.get_aol_supported())
+    if not supported:
+      self.safety.set_controls_allowed(False)
+      self.safety.set_alternative_experience(self.safety.get_alternative_experience() |
+                                             ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+      self.assertFalse(self.safety.get_aol_allowed())
+
   def test_manually_enable_controls_allowed(self):
     self.safety.set_controls_allowed(1)
     self.assertTrue(self.safety.get_controls_allowed())
@@ -1215,3 +1226,159 @@ class CarSafetyTest(SafetyTest):
         self.safety.safety_tick()
         self.assertFalse(self.safety.get_controls_allowed())
         self.assertFalse(self.safety.safety_config_valid())
+
+
+class AlwaysOnLateralSafetyTestBase(SafetyTestBase, abc.ABC):
+
+  @abc.abstractmethod
+  def _set_aol_acc_main(self, main_on: bool):
+    pass
+
+  @abc.abstractmethod
+  def _aol_lateral_cmd(self):
+    pass
+
+  def _aol_steering_disengage_msg(self, disengage: bool):
+    raise unittest.SkipTest("No steering disengage message for this safety mode")
+
+  def _aol_invalid_rx_msg(self):
+    raise unittest.SkipTest("No invalid rx message for this safety mode")
+
+  def _aol_refresh_msg(self):
+    return self._speed_msg(0)
+
+  def _set_aol_experience(self, enabled: bool):
+    experience = self.safety.get_alternative_experience()
+    if enabled:
+      experience |= ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL
+    else:
+      experience &= ~ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL
+    self.safety.set_alternative_experience(experience)
+
+  def _prepare_aol_lateral(self):
+    self.safety.set_controls_allowed(False)
+    self._set_aol_experience(True)
+    self._set_aol_acc_main(True)
+    self.assertTrue(self.safety.get_aol_allowed())
+
+  def _assert_aol_lateral(self, should_tx: bool):
+    self.assertEqual(should_tx, self._tx(self._aol_lateral_cmd()))
+
+  def test_always_on_lateral_acc_main_state(self):
+    self._set_aol_acc_main(True)
+    self.assertTrue(self.safety.get_acc_main_on())
+    self._set_aol_acc_main(False)
+    self.assertFalse(self.safety.get_acc_main_on())
+
+  def test_always_on_lateral_not_allowed_without_alt_experience(self):
+    self._set_aol_experience(False)
+    self._set_aol_acc_main(True)
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
+  def test_always_on_lateral_allowed_flag(self):
+    self._set_aol_experience(True)
+    self._set_aol_acc_main(True)
+    self.assertTrue(self.safety.get_aol_allowed())
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    self._set_aol_acc_main(False)
+    self.assertFalse(self.safety.get_aol_allowed())
+
+  def test_always_on_lateral_blocks_without_preconditions(self):
+    for experience in (True, False):
+      for main_on in (True, False):
+        with self.subTest(experience=experience, main_on=main_on):
+          self.safety.set_controls_allowed(False)
+          self._set_aol_experience(experience)
+          self._set_aol_acc_main(main_on)
+          self.assertEqual(experience and main_on, self.safety.get_aol_allowed())
+          self._assert_aol_lateral(experience and main_on)
+
+  def test_always_on_lateral_does_not_enable_longitudinal(self):
+    self._prepare_aol_lateral()
+    self.assertFalse(self.safety.get_longitudinal_allowed())
+
+  def test_always_on_lateral_blocks_with_invalid_rx_checks(self):
+    self._prepare_aol_lateral()
+    self._assert_aol_lateral(True)
+
+    self.safety.set_timer(int(2e6))
+    self.safety.safety_tick()
+    self.assertFalse(self.safety.safety_config_valid())
+    self._rx(self._aol_refresh_msg())
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
+  def test_always_on_lateral_blocks_on_rx_loss_without_any_rx(self):
+    # total CAN loss: only the 1 Hz tick runs, no RX ever recomputes the gate
+    self._prepare_aol_lateral()
+    self._assert_aol_lateral(True)
+
+    for _ in range(5):
+      self.safety.set_timer(int(5e6))
+      self.safety.safety_tick()
+    self.assertFalse(self.safety.safety_config_valid())
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
+  def test_always_on_lateral_blocks_on_invalid_rx_msg(self):
+    self._prepare_aol_lateral()
+    self._assert_aol_lateral(True)
+
+    self.assertFalse(self._rx(self._aol_invalid_rx_msg()))
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
+  def test_always_on_lateral_rx_latch_survives_a_later_good_frame(self):
+    self._prepare_aol_lateral()
+    self.assertFalse(self._rx(self._aol_invalid_rx_msg()))
+
+    self._set_aol_acc_main(True)
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
+  def test_always_on_lateral_rx_latch_cleared_by_safety_mode_reset(self):
+    self._prepare_aol_lateral()
+    self.assertFalse(self._rx(self._aol_invalid_rx_msg()))
+
+    self._reset_safety_hooks()
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._set_aol_acc_main(True)
+    self.assertTrue(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(True)
+
+  def test_always_on_lateral_blocks_with_steering_disengage(self):
+    self._prepare_aol_lateral()
+    self._assert_aol_lateral(True)
+
+    self._rx(self._aol_steering_disengage_msg(True))
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._assert_aol_lateral(False)
+
+    self._rx(self._aol_steering_disengage_msg(False))
+    self.assertTrue(self.safety.get_aol_allowed())
+
+
+class AlwaysOnLateralTorqueSteeringSafetyTest(AlwaysOnLateralSafetyTestBase, TorqueSteeringSafetyTestBase, abc.ABC):
+
+  def _aol_lateral_cmd(self):
+    self._set_prev_torque(0)
+    return self._torque_cmd_msg(self.MAX_RATE_UP)
+
+  def test_always_on_lateral_torque_when_acc_main_on(self):
+    self._prepare_aol_lateral()
+    self._set_prev_torque(0)
+    self.assertTrue(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
+
+    self._set_aol_acc_main(False)
+    self._set_prev_torque(0)
+    self.assertFalse(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
+
+  def test_always_on_lateral_respects_torque_limit(self):
+    self._prepare_aol_lateral()
+    self._set_prev_torque(self.MAX_TORQUE)
+    self.assertTrue(self._tx(self._torque_cmd_msg(self.MAX_TORQUE)))
+    self._set_prev_torque(self.MAX_TORQUE)
+    self.assertFalse(self._tx(self._torque_cmd_msg(self.MAX_TORQUE + 1)))
+    self.assertFalse(self.safety.get_controls_allowed())

@@ -11,7 +11,7 @@ class CarInterface(CarInterfaceBase):
   CarController = CarController
 
   @staticmethod
-  def _get_params(ret: structs.CarParams, candidate: CAR, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
+  def _get_params(ret: structs.CarParams, candidate: CAR, fingerprint, car_fw, alpha_long, is_release, docs, increased_steer_torque) -> structs.CarParams:
     ret.brand = "subaru"
     ret.radarUnavailable = True
     # for HYBRID CARS to be upstreamed, we need:
@@ -55,9 +55,16 @@ class CarInterface(CarInterfaceBase):
     elif candidate == CAR.SUBARU_IMPREZA:
       ret.steerActuatorDelay = 0.4  # end-to-end angle controller
       ret.lateralTuning.init('pid')
-      ret.lateralTuning.pid.kf = 0.00005
       ret.lateralTuning.pid.kiBP, ret.lateralTuning.pid.kpBP = [[0., 20.], [0., 20.]]
-      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.2, 0.3], [0.02, 0.03]]
+      kf, kpV, kiV = 0.00005, [0.2, 0.3], [0.02, 0.03]
+      if increased_steer_torque:
+        # gains scaled by 1/1.5 so torque per unit error is unchanged; only the saturation point moves.
+        # panda rejects the higher cap unless the matching safetyParam bit is set here
+        ret.flags |= SubaruFlags.IMPREZA_TORQUE.value
+        ret.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.IMPREZA_TORQUE.value
+        kf, kpV, kiV = kf / 1.5, [k / 1.5 for k in kpV], [k / 1.5 for k in kiV]
+      ret.lateralTuning.pid.kf = kf
+      ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = kpV, kiV
 
     elif candidate == CAR.SUBARU_IMPREZA_2020:
       ret.lateralTuning.init('pid')
@@ -113,3 +120,14 @@ class CarInterface(CarInterfaceBase):
   def deinit(CP, can_recv, can_send):
     communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, uds.CONTROL_TYPE.ENABLE_RX_ENABLE_TX, uds.MESSAGE_TYPE.NORMAL])
     CarInterface.init(CP, can_recv, can_send, communication_control)
+
+  @staticmethod
+  def enable_stop_and_go(CP) -> bool:
+    # mirroring Throttle/Brake_Pedal to EyeSight is only validated on gen1 global cars running stock cruise;
+    # CP is shared with CI.CS and CI.CC, so mutating it here reaches the controller and state for this boot
+    eligible = not (CP.flags & (SubaruFlags.GLOBAL_GEN2 | SubaruFlags.HYBRID | SubaruFlags.PREGLOBAL | SubaruFlags.LKAS_ANGLE)) \
+               and not CP.openpilotLongitudinalControl
+    if eligible:
+      CP.flags |= SubaruFlags.SNG.value
+      CP.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.SNG.value
+    return eligible
