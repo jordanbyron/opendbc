@@ -15,6 +15,12 @@ class CarState(CarStateBase):
 
     self.angle_rate_calulator = CanSignalRateCalculator(50)
 
+    self.car_follow = 0
+    self.close_distance = 0.
+    self.cruise_state = 0
+    self.throttle_msg = None
+    self.brake_pedal_msg = None
+
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
@@ -117,6 +123,15 @@ class CarState(CarStateBase):
       ret.cruiseState.standstill = cp_cam.vl["ES_DashStatus"]["Cruise_State"] == 3
       ret.stockFcw = (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 1) or \
                      (cp_cam.vl["ES_LKAS_State"]["LKAS_Alert"] == 2)
+
+      if self.CP.flags & SubaruFlags.SNG:
+        # eligibility excludes gen2/hybrid, so ES_Distance is on the camera bus and the engine/brake
+        # messages are on the powertrain bus
+        self.cruise_state = cp_cam.vl["ES_DashStatus"]["Cruise_State"]
+        self.car_follow = cp_es_distance.vl["ES_Distance"]["Car_Follow"]
+        self.close_distance = cp_es_distance.vl["ES_Distance"]["Close_Distance"]
+        self.throttle_msg = copy.copy(cp.vl["Throttle"])
+        self.brake_pedal_msg = copy.copy(cp.vl["Brake_Pedal"])
 
       self.es_lkas_state_msg = copy.copy(cp_cam.vl["ES_LKAS_State"])
       self.es_brake_msg = copy.copy(cp_es_brake.vl["ES_Brake"])

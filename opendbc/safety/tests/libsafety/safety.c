@@ -38,6 +38,10 @@ void set_alternative_experience(int mode){
   alternative_experience = mode;
 }
 
+int get_alternative_experience(void){
+  return alternative_experience;
+}
+
 void set_relay_malfunction(bool c){
   relay_malfunction = c;
 }
@@ -88,6 +92,14 @@ bool get_vehicle_moving(void){
 
 bool get_acc_main_on(void){
   return acc_main_on;
+}
+
+bool get_aol_allowed(void){
+  return aol_allowed;
+}
+
+bool get_aol_supported(void){
+  return aol_supported;
 }
 
 float get_vehicle_speed_min(void){

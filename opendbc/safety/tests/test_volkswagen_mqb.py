@@ -2,6 +2,7 @@
 import unittest
 import numpy as np
 from opendbc.car.structs import CarParams
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 import opendbc.safety.tests.common as common
 from opendbc.car.volkswagen.values import VolkswagenSafetyFlags
 
@@ -63,6 +64,17 @@ class TestVolkswagenMqbSafetyBase(common.CarSafetyTest, common.DriverTorqueSteer
 
   def _pcm_status_msg(self, enable):
     return self._tsk_status_msg(enable)
+
+  def test_always_on_lateral_denied(self):
+    # MQB populates acc_main_on from stock CAN and routes HCA through the shared steer_torque_cmd_checks(),
+    # so an unscoped AOL gate would let the bit open lateral here; AOL is Subaru-only
+    self.safety.set_controls_allowed(False)
+    self.safety.set_alternative_experience(ALTERNATIVE_EXPERIENCE.ALWAYS_ON_LATERAL)
+    self._rx(self._tsk_status_msg(False, main_switch=True))
+    self.assertTrue(self.safety.get_acc_main_on())
+    self.assertFalse(self.safety.get_aol_allowed())
+    self._set_prev_torque(0)
+    self.assertFalse(self._tx(self._torque_cmd_msg(self.MAX_RATE_UP)))
 
   # Driver steering input torque
   def _torque_driver_msg(self, torque):
